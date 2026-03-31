@@ -7,7 +7,8 @@ Test suite uses `smol` runtime.
 - *Mutex -* learned the race conditions that come up with `Waker` management. That's why I wrapped the waker queue in a sync Mutex. It makes sense why `tokio` recommends using `std::sync::Mutex` when you don't cross `.await` points. The async Mutex comes with this performance hit.
 - *RwLock -* tricky double-check logic required that was glossed over in the sync implementation that simply looped. Learned lots about proper memory
 ordering.
-- *Condvar -* took me a while to figure out how to hold on to the `Mutex` between `.await` points. My `counter` check might be redundant.
+- *Condvar -* took me a while to figure out how to hold on to the `Mutex` between `.await` points. Had to work through some issues with stale wakers potentially getting
+saved in the queue. Funky `slot` solution and elaborate `.drop` logic solves it.
 
 ### Test Output
 
@@ -80,7 +81,7 @@ running 1 test
 test rwlock::tests::test_async_rwlock ... ok
 ```
 #### Condvar
-Spin up a few threads with copies of the executor on them. Spawn 4 workers that will run through a loop twice each time calling `.wait()` on the `Condvar`. Then spawn a task that loops through six times, alternating between calling `.wake_one()` and `.wake_all()`.
+Spin up a few threads with copies of the executor on them. Spawn 4 workers that will run through a loop twice each time calling `.wait()` on the `Condvar`. Then spawn a task that loops through six times, alternating between calling `.notify_one()` and `.notify_all()`.
 ```
 running 1 test
 [3] going to sleep (1)...

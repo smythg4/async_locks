@@ -1,36 +1,36 @@
 use crossbeam_queue::SegQueue;
 use std::future::Future;
 use std::pin::pin;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering::{Acquire, Release};
+use std::sync::{Arc, Mutex as SyncMutex};
 use std::task::{Poll, Waker};
 
 use crate::mutex::{Mutex, MutexGuard};
 
 pub struct Condvar {
-    counter: AtomicU32,
-    wakers: SegQueue<Waker>,
+    wakers: SegQueue<Arc<SyncMutex<Option<Waker>>>>,
 }
 
 impl Condvar {
     pub const fn new() -> Self {
         Self {
-            counter: AtomicU32::new(0),
             wakers: SegQueue::new(),
         }
     }
 
     pub fn notify_one(&self) {
-        if let Some(w) = self.wakers.pop() {
-            self.counter.fetch_add(1, Release);
-            w.wake();
+        while let Some(slot) = self.wakers.pop() {
+            if let Some(w) = slot.lock().unwrap().take() {
+                w.wake();
+                break;
+            }
         }
     }
 
     pub fn notify_all(&self) {
-        while let Some(w) = self.wakers.pop() {
-            self.counter.fetch_add(1, Release);
-            w.wake();
+        while let Some(slot) = self.wakers.pop() {
+            if let Some(w) = slot.lock().unwrap().take() {
+                w.wake();
+            }
         }
     }
 
@@ -39,7 +39,7 @@ impl Condvar {
             guard: Some(guard),
             cv: self,
             mutex: None,
-            counter_store: None,
+            slot: None,
         }
     }
 }
@@ -54,7 +54,16 @@ pub struct CondvarWaitFuture<'a, 'b, T> {
     cv: &'a Condvar,
     guard: Option<MutexGuard<'b, T>>,
     mutex: Option<&'b Mutex<T>>,
-    counter_store: Option<u32>,
+    slot: Option<Arc<SyncMutex<Option<Waker>>>>,
+}
+
+impl<'a, 'b, T> Drop for CondvarWaitFuture<'a, 'b, T> {
+    fn drop(&mut self) {
+        // this process is needed to eliminate stale wakers in the Condvar waker queue
+        if let Some(slot) = self.slot.take() {
+            *slot.lock().unwrap() = None;
+        }
+    }
 }
 
 impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
@@ -79,10 +88,11 @@ impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
 
         // mutex.lock()
 
-        if self.counter_store.is_none() {
-            // first time calling wait, register our waker, set an initial counter state and return pending
-            self.counter_store = Some(self.cv.counter.load(Acquire));
-            self.cv.wakers.push(cx.waker().clone());
+        if self.mutex.is_none() {
+            // first time calling wait, register our waker, save the mutex and return pending
+            let slot = Arc::new(SyncMutex::new(Some(cx.waker().clone())));
+            self.cv.wakers.push(Arc::clone(&slot));
+            self.slot = Some(slot);
 
             // unlock the mutex by dropping the guard,
             // but remember the mutex so we can lock it later.
@@ -90,17 +100,20 @@ impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
             self.mutex = Some(guard.mutex);
             drop(guard);
 
-            Poll::Pending
-        } else if Some(self.cv.counter.load(Acquire)) == self.counter_store {
-            // subsequent check, ensure that the counter value has changed, if not, register waker and return pending
-            self.cv.wakers.push(cx.waker().clone());
-            Poll::Pending
-        } else {
-            // counter changed! attempt to get the lock and return the guard
-            let mutex = pin!(self.mutex.unwrap().lock());
-            // should acquire the lock immediately here
-            mutex.poll(cx)
+            return Poll::Pending;
+        } else if let Some(ref slot) = self.slot {
+            let mut inner = slot.lock().unwrap();
+            if inner.is_some() {
+                // spurious wake up -- nobody took our waker
+                // we'll update this stale waker with a fresh one
+                *inner = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
         }
+        // attempt to get the lock and return the guard
+        let mutex = pin!(self.mutex.unwrap().lock());
+        // lock may be contended in the event of a .notify_all()
+        mutex.poll(cx)
     }
 }
 
@@ -122,7 +135,7 @@ mod tests {
                 std::thread::spawn(move || smol::block_on(ex.run(std::future::pending::<()>())))
             })
             .collect();
-        
+
         smol::block_on(async move {
             let workers: Vec<_> = (0..4)
                 .map(|id| {
