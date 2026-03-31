@@ -4,10 +4,10 @@ Test suite uses `smol` runtime.
 
 ### Building concurrency primitives from scratch for asynchronous Rust.
 
-- Mutex - learned the race conditions that come up with `Waker` management. That's why I wrapped the waker queue in a sync Mutex. It makes sense why `tokio` recommends using `std::sync::Mutex` when you don't cross `.await` points. The async Mutex comes with this performance hit.
-- RwLock - tricky double-check logic required that was glossed over in the sync implementation that simply looped. Learned lots about proper memory
+- *Mutex -* learned the race conditions that come up with `Waker` management. That's why I wrapped the waker queue in a sync Mutex. It makes sense why `tokio` recommends using `std::sync::Mutex` when you don't cross `.await` points. The async Mutex comes with this performance hit.
+- *RwLock -* tricky double-check logic required that was glossed over in the sync implementation that simply looped. Learned lots about proper memory
 ordering.
-- Condvar - took me a while to figure out how to hold on to the `Mutex` between `.await` points. My `counter` check might be redundant.
+- *Condvar -* took me a while to figure out how to hold on to the `Mutex` between `.await` points. My `counter` check might be redundant.
 
 ### Test Output
 
