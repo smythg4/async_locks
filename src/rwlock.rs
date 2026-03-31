@@ -174,6 +174,7 @@ impl<'a, T> Future for WriteLockFuture<'a, T> {
             if s <= 1 {
                 // lock became free
                 let _ = w_wakers.pop_back();
+                let _ = self.slot.take();
                 drop(w_wakers);
                 continue; // retry acquisition
             }

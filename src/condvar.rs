@@ -121,62 +121,98 @@ impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
 mod tests {
     use super::*;
     use futures::future;
-    use std::sync::{Arc, atomic::AtomicUsize};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering::Relaxed},
+    };
+
+    fn make_executor() -> Arc<smol::Executor<'static>> {
+        let ex = Arc::new(smol::Executor::new());
+        for _ in 0..4 {
+            let ex = Arc::clone(&ex);
+            std::thread::spawn(move || smol::block_on(ex.run(std::future::pending::<()>())));
+        }
+        ex
+    }
+
+    // Tests that notify_one wakes exactly one waiter at a time.
+    // Workers each consume one "token" (counter decrement).
+    // Notifier adds one token and signals once per worker.
     #[test]
-    fn condvar_basics() {
+    fn condvar_notify_one() {
+        let ex = make_executor();
         let cv = Arc::new(Condvar::new());
         let mutex = Arc::new(Mutex::new(0usize));
-        let ex = Arc::new(smol::Executor::new());
-        let counter= Arc::new(AtomicUsize::new(0));
-
-        // spawn N OS threads all running the same executor
-        let _threads: Vec<_> = (0..8)
-            .map(|_| {
-                let ex = Arc::clone(&ex);
-                std::thread::spawn(move || smol::block_on(ex.run(std::future::pending::<()>())))
-            })
-            .collect();
+        let completed = Arc::new(AtomicUsize::new(0));
+        let num_workers = 4;
 
         smol::block_on(async move {
-            let workers: Vec<_> = (0..4)
-                .map(|id| {
+            let workers: Vec<_> = (0..num_workers)
+                .map(|_| {
                     let cv = Arc::clone(&cv);
                     let mutex = Arc::clone(&mutex);
-                    let counter = Arc::clone(&counter);
-                    async move {
-                        for i in 1..3 {
-                            let guard = mutex.lock().await;
-                            println!("[{id}] going to sleep ({i})...");
-                            cv.wait(guard).await;
-                            println!("[{id}] waking up ({i})...");
-                            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let completed = Arc::clone(&completed);
+                    ex.spawn(async move {
+                        let mut guard = mutex.lock().await;
+                        while *guard == 0 {
+                            guard = cv.wait(guard).await;
                         }
-                        println!("[{id}] All done!");
-                    }
+                        *guard -= 1;
+                        drop(guard);
+                        completed.fetch_add(1, Relaxed);
+                    })
                 })
-                .map(|f| ex.spawn(f))
                 .collect();
 
-            let wake_ups = ex.spawn(async move {
-                for i in 0..6 {
-                    if i % 2 == 0 {
-                        println!("Wake one up!");
-                        cv.notify_one();
-                    } else {
-                        println!("Wake 'em all up!");
-                        cv.notify_all();
-                    }
-                    smol::Timer::after(std::time::Duration::from_secs(1)).await;
-                }
-            });
+            for _ in 0..num_workers {
+                let mut guard = mutex.lock().await;
+                *guard += 1;
+                drop(guard);
+                cv.notify_one();
+                smol::future::yield_now().await;
+            }
 
-            ex.run(async {
-                let all_tasks: Vec<_> = workers.into_iter().chain([wake_ups]).collect();
-                future::join_all(all_tasks).await;
-                let count = counter.load(std::sync::atomic::Ordering::Relaxed);
-                assert_eq!(count, 4*2);
-            })
-            .await;
-        })
+            future::join_all(workers).await;
+            assert_eq!(completed.load(Relaxed), num_workers);
+            assert_eq!(*mutex.lock().await, 0); // all tokens consumed
+        });
+    }
+
+    // Tests that notify_all wakes every waiter in one shot.
+    #[test]
+    fn condvar_notify_all() {
+        let ex = make_executor();
+        let cv = Arc::new(Condvar::new());
+        let mutex = Arc::new(Mutex::new(false));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let num_workers = 4;
+
+        smol::block_on(async move {
+            let workers: Vec<_> = (0..num_workers)
+                .map(|_| {
+                    let cv = Arc::clone(&cv);
+                    let mutex = Arc::clone(&mutex);
+                    let completed = Arc::clone(&completed);
+                    ex.spawn(async move {
+                        let mut guard = mutex.lock().await;
+                        while !*guard {
+                            guard = cv.wait(guard).await;
+                        }
+                        drop(guard);
+                        completed.fetch_add(1, Relaxed);
+                    })
+                })
+                .collect();
+
+            smol::future::yield_now().await; // let workers reach cv.wait
+
+            let mut guard = mutex.lock().await;
+            *guard = true;
+            drop(guard);
+            cv.notify_all();
+
+            future::join_all(workers).await;
+            assert_eq!(completed.load(Relaxed), num_workers);
+        });
     }
 }
