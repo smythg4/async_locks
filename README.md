@@ -10,7 +10,7 @@ Test suite uses `smol` runtime. `crossbeam-queue::SegQueue` is used as a lock-fr
 saved in the queue. Funky `slot` solution and elaborate `.drop` logic solves it.
 
 ### To-Do
-Need to research options for tracking `Wakers` that's better than what I'm doing now. Perhaps an `Arc<Mutex<HashSet<usize, Waker>>`? We can maintain a global `waker_counter` for id assignment.
+Need to research options for tracking `Wakers` that's better than what I'm doing now. Perhaps an `Arc<Mutex<HashSet<usize, Waker>>`? We can maintain a `waker_counter` in the `Mutex`, `RwLock`, and `Condvar` for id assignment.
 
 ### Test Output
 #### Mutex
