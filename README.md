@@ -1,6 +1,6 @@
 # async_locks
 ### About
-Test suite uses `smol` runtime.
+Test suite uses `smol` runtime. `crossbeam-queue` is used as a lock-free queue in Condvar wakers.
 
 ### Building concurrency primitives from scratch for asynchronous Rust.
 
