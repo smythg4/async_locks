@@ -113,10 +113,17 @@ mod tests {
     fn condvar_basics() {
         let cv = Arc::new(Condvar::new());
         let mutex = Arc::new(Mutex::new(0usize));
+        let ex = Arc::new(smol::Executor::new());
 
+        // spawn N OS threads all running the same executor
+        let _threads: Vec<_> = (0..8)
+            .map(|_| {
+                let ex = Arc::clone(&ex);
+                std::thread::spawn(move || smol::block_on(ex.run(std::future::pending::<()>())))
+            })
+            .collect();
+        
         smol::block_on(async move {
-            let ex = smol::Executor::new();
-
             let workers: Vec<_> = (0..4)
                 .map(|id| {
                     let cv = Arc::clone(&cv);

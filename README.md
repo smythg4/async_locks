@@ -50,64 +50,63 @@ test mutex::tests::test_async_mutex_contended ... ok
 ```
 
 #### RwLock
-Spawn 3 writer tasks and 5 reader tasks. Each worker does 3 reads or writes.
+Spin up a few threads with copies of the executor on them. Spawn 3 writer tasks and 5 reader tasks. Each worker does 3 reads or writes.
 ```
 running 1 test
 [W0] wrote, value is now 1
 [W1] wrote, value is now 2
 [W2] wrote, value is now 3
-[R0] read value: 3
-[R1] read value: 3
-[R2] read value: 3
-[R3] read value: 3
-[R4] read value: 3
 [W0] wrote, value is now 4
 [W1] wrote, value is now 5
-[W2] wrote, value is now 6
-[R0] read value: 6
-[R1] read value: 6
-[R2] read value: 6
-[R3] read value: 6
-[R4] read value: 6
+[W1] wrote, value is now 6
 [W0] wrote, value is now 7
-[W1] wrote, value is now 8
+[R4] read value: 7
+[R2] read value: 7
+[R3] read value: 7
+[R4] read value: 7
+[R2] read value: 7
+[R3] read value: 7
+[R4] read value: 7
+[R2] read value: 7
+[R3] read value: 7
+[R1] read value: 7
+[R1] read value: 7
+[R1] read value: 7
+[R0] read value: 7
+[W2] wrote, value is now 8
+[R0] read value: 8
 [W2] wrote, value is now 9
 [R0] read value: 9
-[R1] read value: 9
-[R2] read value: 9
-[R3] read value: 9
-[R4] read value: 9
 test rwlock::tests::test_async_rwlock ... ok
 ```
 #### Condvar
-Spawn 4 workers that will run through a loop twice each time calling `.wait()` on the `Condvar`. Then spawn
-a task that loops through six times, alternating between calling `.wake_one()` and `.wake_all()`.
+Spin up a few threads with copies of the executor on them. Spawn 4 workers that will run through a loop twice each time calling `.wait()` on the `Condvar`. Then spawn a task that loops through six times, alternating between calling `.wake_one()` and `.wake_all()`.
 ```
 running 1 test
+[3] going to sleep (1)...
 [0] going to sleep (1)...
 [1] going to sleep (1)...
 [2] going to sleep (1)...
-[3] going to sleep (1)...
 Wake one up!
-[0] waking up (1)...
-[0] going to sleep (2)...
+[3] waking up (1)...
+[3] going to sleep (2)...
 Wake 'em all up!
+[3] waking up (2)...
+[3] All done!
 [1] waking up (1)...
 [1] going to sleep (2)...
 [2] waking up (1)...
 [2] going to sleep (2)...
-[3] waking up (1)...
-[3] going to sleep (2)...
-[0] waking up (2)...
-[0] All done!
+[0] waking up (1)...
+[0] going to sleep (2)...
 Wake one up!
 [1] waking up (2)...
 [1] All done!
 Wake 'em all up!
 [2] waking up (2)...
 [2] All done!
-[3] waking up (2)...
-[3] All done!
+[0] waking up (2)...
+[0] All done!
 Wake one up!
 Wake 'em all up!
 test condvar::tests::condvar_basics ... ok

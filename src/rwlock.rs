@@ -267,9 +267,17 @@ mod tests {
         let writes_per_writer = 3;
         let reads_per_reader = 3;
 
-        smol::block_on(async move {
-            let ex = smol::Executor::new();
+        let ex = Arc::new(smol::Executor::new());
 
+        // spawn N OS threads all running the same executor
+        let _threads: Vec<_> = (0..8)
+            .map(|_| {
+                let ex = Arc::clone(&ex);
+                std::thread::spawn(move || smol::block_on(ex.run(std::future::pending::<()>())))
+            })
+            .collect();
+
+        smol::block_on(async move {
             let write_tasks: Vec<_> = (0..num_writers)
                 .map(|id| {
                     let lock = Arc::clone(&lock);
