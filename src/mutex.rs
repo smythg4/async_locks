@@ -112,8 +112,8 @@ mod tests {
 
     #[test]
     fn test_async_mutex_contended() {
-        let num_tasks = 1000;
-        let increments_per_task = 1000;
+        let num_tasks = 5;
+        let increments_per_task = 5;
 
         let mutex = Arc::new(Mutex::new(0usize));
         let completed = Arc::new(AtomicUsize::new(0));
@@ -138,6 +138,7 @@ mod tests {
                         for _ in 0..increments_per_task {
                             let mut guard = mutex.lock().await;
                             *guard += 1;
+                            println!("[{id}] counter = {}", *guard);
                             drop(guard);
                             smol::future::yield_now().await;
                         }

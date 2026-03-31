@@ -128,6 +128,7 @@ mod tests {
                             cv.wait(guard).await;
                             println!("[{id}] waking up ({i})...");
                         }
+                        println!("[{id}] All done!");
                     }
                 })
                 .map(|f| ex.spawn(f))

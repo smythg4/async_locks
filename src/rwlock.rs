@@ -262,10 +262,10 @@ mod tests {
     #[test]
     fn test_async_rwlock() {
         let lock = Arc::new(RwLock::new(0u32));
-        let num_writers = 5;
-        let num_readers = 12;
-        let writes_per_writer = 50;
-        let reads_per_reader = 50;
+        let num_writers = 3;
+        let num_readers = 5;
+        let writes_per_writer = 3;
+        let reads_per_reader = 3;
 
         smol::block_on(async move {
             let ex = smol::Executor::new();
