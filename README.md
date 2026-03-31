@@ -80,4 +80,33 @@ running 1 test
 test rwlock::tests::test_async_rwlock ... ok
 ```
 #### Condvar
-Under construction...
+Testing `.notify_one()`
+```
+running 1 test
+Waking one worker up!
+[0] woken up!
+[1] going to sleep
+[3] going to sleep
+[2] going to sleep
+Waking one worker up!
+[1] woken up!
+Waking one worker up!
+Waking one worker up!
+[3] woken up!
+[2] woken up!
+test condvar::tests::condvar_notify_one ... ok
+```
+Testing `.notify_all()`
+```
+running 1 test
+[0] going to sleep
+[2] going to sleep
+[3] going to sleep
+[1] going to sleep
+Waking everyone up!
+[0] woken up!
+[1] woken up!
+[2] woken up!
+[3] woken up!
+test condvar::tests::condvar_notify_all ... ok
+```

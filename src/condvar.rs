@@ -148,15 +148,17 @@ mod tests {
 
         smol::block_on(async move {
             let workers: Vec<_> = (0..num_workers)
-                .map(|_| {
+                .map(|id| {
                     let cv = Arc::clone(&cv);
                     let mutex = Arc::clone(&mutex);
                     let completed = Arc::clone(&completed);
                     ex.spawn(async move {
                         let mut guard = mutex.lock().await;
                         while *guard == 0 {
+                            println!("[{id}] going to sleep");
                             guard = cv.wait(guard).await;
                         }
+                        println!("[{id}] woken up!");
                         *guard -= 1;
                         drop(guard);
                         completed.fetch_add(1, Relaxed);
@@ -168,6 +170,7 @@ mod tests {
                 let mut guard = mutex.lock().await;
                 *guard += 1;
                 drop(guard);
+                println!("Waking one worker up!");
                 cv.notify_one();
                 smol::future::yield_now().await;
             }
@@ -189,15 +192,17 @@ mod tests {
 
         smol::block_on(async move {
             let workers: Vec<_> = (0..num_workers)
-                .map(|_| {
+                .map(|id| {
                     let cv = Arc::clone(&cv);
                     let mutex = Arc::clone(&mutex);
                     let completed = Arc::clone(&completed);
                     ex.spawn(async move {
                         let mut guard = mutex.lock().await;
-                        while !*guard {
+                        while *guard == false {
+                            println!("[{id}] going to sleep");
                             guard = cv.wait(guard).await;
                         }
+                        println!("[{id}] woken up!");
                         drop(guard);
                         completed.fetch_add(1, Relaxed);
                     })
@@ -209,6 +214,7 @@ mod tests {
             let mut guard = mutex.lock().await;
             *guard = true;
             drop(guard);
+            println!("Waking everyone up!");
             cv.notify_all();
 
             future::join_all(workers).await;
