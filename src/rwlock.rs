@@ -3,9 +3,9 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::ops::{Deref, DerefMut, Drop};
 use std::pin::Pin;
-use std::sync::Mutex as SyncMutex;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::{Arc, Mutex as SyncMutex};
 use std::task::Waker;
 use std::task::{Context, Poll};
 
@@ -17,8 +17,8 @@ pub struct RwLock<T> {
     /// the state is even, but need to block when odd.
     state: AtomicU32,
     value: UnsafeCell<T>,
-    writer_wakers: SyncMutex<VecDeque<Waker>>,
-    reader_wakers: SyncMutex<VecDeque<Waker>>,
+    writer_wakers: SyncMutex<VecDeque<Arc<SyncMutex<Option<Waker>>>>>,
+    reader_wakers: SyncMutex<VecDeque<Arc<SyncMutex<Option<Waker>>>>>,
 }
 
 unsafe impl<T> Sync for RwLock<T> where T: Send + Sync {}
@@ -34,16 +34,76 @@ impl<T> RwLock<T> {
     }
 
     pub fn read(&self) -> ReadLockFuture<'_, T> {
-        ReadLockFuture { rwlock: self }
+        ReadLockFuture {
+            rwlock: self,
+            slot: None,
+        }
     }
 
     pub fn write(&self) -> WriteLockFuture<'_, T> {
-        WriteLockFuture { rwlock: self }
+        WriteLockFuture {
+            rwlock: self,
+            slot: None,
+            set_odd: false,
+        }
     }
 }
 
 pub struct WriteLockFuture<'a, T> {
     rwlock: &'a RwLock<T>,
+    slot: Option<Arc<SyncMutex<Option<Waker>>>>,
+    set_odd: bool,
+}
+
+impl<'a, T> Drop for WriteLockFuture<'a, T> {
+    fn drop(&mut self) {
+        // this process is needed to eliminate stale wakers in the writer wakers queue
+        let needs_cleanup = if let Some(slot) = self.slot.take() {
+            *slot.lock().unwrap() = None;
+            true
+        } else {
+            self.set_odd
+        };
+
+        if needs_cleanup {
+            let w_guard = self.rwlock.writer_wakers.lock().unwrap();
+            let all_writers_dead = w_guard.iter().all(|s| s.lock().unwrap().is_none());
+            if all_writers_dead {
+                // clear the odd bit - there are no writers waiting
+                let mut s = self.rwlock.state.load(Relaxed);
+                loop {
+                    if s.is_multiple_of(2) || s == u32::MAX {
+                        break;
+                    }
+                    match self
+                        .rwlock
+                        .state
+                        .compare_exchange_weak(s, s - 1, Release, Relaxed)
+                    {
+                        Ok(_) => {
+                            break;
+                        }
+                        Err(e) => {
+                            s = e;
+                        }
+                    };
+                }
+                drop(w_guard);
+                // wake the readers
+                let mut r_guard = self.rwlock.reader_wakers.lock().unwrap();
+                let mut wakers = Vec::new();
+                while let Some(g) = r_guard.pop_front() {
+                    if let Some(w) = g.lock().unwrap().take() {
+                        // collect all the reader wakers
+                        wakers.push(w);
+                    }
+                }
+                drop(r_guard);
+                // wake ALL the readers
+                wakers.into_iter().for_each(|w| w.wake());
+            }
+        }
+    }
 }
 // sync version:
 // let mut s = self.state.load(Relaxed);
@@ -79,7 +139,7 @@ pub struct WriteLockFuture<'a, T> {
 
 impl<'a, T> Future for WriteLockFuture<'a, T> {
     type Output = WriteGuard<'a, T>;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut s = self.rwlock.state.load(Relaxed);
         loop {
             // try to lock if unlocked
@@ -90,6 +150,7 @@ impl<'a, T> Future for WriteLockFuture<'a, T> {
                     .compare_exchange_weak(s, u32::MAX, Acquire, Relaxed)
                 {
                     Ok(_) => {
+                        self.set_odd = false;
                         return Poll::Ready(WriteGuard {
                             rwlock: self.rwlock,
                         });
@@ -100,6 +161,7 @@ impl<'a, T> Future for WriteLockFuture<'a, T> {
                     }
                 }
             }
+            self.set_odd = true;
 
             // block new readers, by making sure the state is odd
             if s.is_multiple_of(2)
@@ -114,7 +176,10 @@ impl<'a, T> Future for WriteLockFuture<'a, T> {
 
             // wait if it's still locked
             let mut w_wakers = self.rwlock.writer_wakers.lock().unwrap();
-            w_wakers.push_back(cx.waker().clone());
+            let slot = Arc::new(SyncMutex::new(Some(cx.waker().clone())));
+            self.slot = Some(Arc::clone(&slot));
+            w_wakers.push_back(slot);
+
             s = self.rwlock.state.load(Relaxed);
             if s <= 1 {
                 // lock became free
@@ -131,6 +196,16 @@ impl<'a, T> Future for WriteLockFuture<'a, T> {
 
 pub struct ReadLockFuture<'a, T> {
     rwlock: &'a RwLock<T>,
+    slot: Option<Arc<SyncMutex<Option<Waker>>>>,
+}
+
+impl<'a, T> Drop for ReadLockFuture<'a, T> {
+    fn drop(&mut self) {
+        // this process is needed to eliminate stale wakers in the reader wakers queue
+        if let Some(slot) = self.slot.take() {
+            *slot.lock().unwrap() = None;
+        }
+    }
 }
 // sync version:
 // let mut s = self.state.load(Relaxed);
@@ -152,7 +227,7 @@ pub struct ReadLockFuture<'a, T> {
 
 impl<'a, T> Future for ReadLockFuture<'a, T> {
     type Output = ReadGuard<'a, T>;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut s = self.rwlock.state.load(Relaxed); // why is relaxed ok here? Ahh, because the compare_exchange is Acquire
         loop {
             if s.is_multiple_of(2) {
@@ -176,7 +251,11 @@ impl<'a, T> Future for ReadLockFuture<'a, T> {
             }
             // odd, writer waiting or write-locked
             let mut r_wakers = self.rwlock.reader_wakers.lock().unwrap();
-            r_wakers.push_back(cx.waker().clone());
+
+            let slot = Arc::new(SyncMutex::new(Some(cx.waker().clone())));
+            self.slot = Some(Arc::clone(&slot));
+            r_wakers.push_back(slot);
+
             s = self.rwlock.state.load(Relaxed);
             if s.is_multiple_of(2) {
                 let _ = r_wakers.pop_back();
@@ -209,8 +288,12 @@ impl<T> Drop for ReadGuard<'_, T> {
             // the RwLock is now unlocked *and* there is
             // a waiting writer, which we wake up
             let mut w_guard = self.rwlock.writer_wakers.lock().unwrap();
-            if let Some(w) = w_guard.pop_front() {
-                w.wake();
+            while let Some(g) = w_guard.pop_front() {
+                if let Some(w) = g.lock().unwrap().take() {
+                    drop(w_guard);
+                    w.wake();
+                    break;
+                }
             }
         }
     }
@@ -236,20 +319,29 @@ impl<T> DerefMut for WriteGuard<'_, T> {
 impl<T> Drop for WriteGuard<'_, T> {
     fn drop(&mut self) {
         let mut w_guard = self.rwlock.writer_wakers.lock().unwrap();
-        if let Some(w) = w_guard.pop_front() {
-            self.rwlock.state.store(1, Release);
-            // wake one writer
-            w.wake();
-            return;
+        while let Some(g) = w_guard.pop_front() {
+            if let Some(w) = g.lock().unwrap().take() {
+                self.rwlock.state.store(1, Release);
+                drop(w_guard);
+                // wake one writer
+                w.wake();
+                return;
+            }
         }
         drop(w_guard);
 
         let mut r_guard = self.rwlock.reader_wakers.lock().unwrap();
         self.rwlock.state.store(0, Release);
-        while let Some(w) = r_guard.pop_front() {
-            // wake ALL readers
-            w.wake();
+        let mut wakers = Vec::new();
+        while let Some(g) = r_guard.pop_front() {
+            if let Some(w) = g.lock().unwrap().take() {
+                // collect all the reader wakers
+                wakers.push(w);
+            }
         }
+        drop(r_guard);
+        // wake ALL the readers
+        wakers.into_iter().for_each(|w| w.wake());
     }
 }
 

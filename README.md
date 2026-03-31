@@ -4,9 +4,8 @@ Test suite uses `smol` runtime. `crossbeam-queue::SegQueue` is used as a lock-fr
 
 ### Building concurrency primitives from scratch for asynchronous Rust.
 
-- *Mutex -* learned the race conditions that come up with `Waker` management. That's why I wrapped the waker queue in a sync Mutex. It makes sense why `tokio` recommends using `std::sync::Mutex` when you don't cross `.await` points. The async Mutex comes with this performance hit.
-- *RwLock -* tricky double-check logic required that was glossed over in the sync implementation that simply looped. Learned lots about proper memory
-ordering.
+- *Mutex -* learned the race conditions that come up with `Waker` management. That's why I wrapped the waker queue in a `std::sync::Mutex`. It makes sense why `tokio` recommends using `std::sync::Mutex` when you don't cross `.await` points. The async Mutex comes with this internal performance hit.
+- *RwLock -* tricky double-check logic required that was glossed over in the sync implementation that simply looped. Learned lots about proper memory ordering. Experienced the same stale waker issue that was present in the `Condvar` implementation and had to use the same silly `slot` and `.drop` pattern. This is probably why production libraries use a `WaitersList` data structure to handle it all internally.
 - *Condvar -* took me a while to figure out how to hold on to the `Mutex` between `.await` points. Had to work through some issues with stale wakers potentially getting
 saved in the queue. Funky `slot` solution and elaborate `.drop` logic solves it.
 
