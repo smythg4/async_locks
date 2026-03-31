@@ -121,12 +121,13 @@ impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
 mod tests {
     use super::*;
     use futures::future;
-    use std::sync::Arc;
+    use std::sync::{Arc, atomic::AtomicUsize};
     #[test]
     fn condvar_basics() {
         let cv = Arc::new(Condvar::new());
         let mutex = Arc::new(Mutex::new(0usize));
         let ex = Arc::new(smol::Executor::new());
+        let counter= Arc::new(AtomicUsize::new(0));
 
         // spawn N OS threads all running the same executor
         let _threads: Vec<_> = (0..8)
@@ -141,12 +142,14 @@ mod tests {
                 .map(|id| {
                     let cv = Arc::clone(&cv);
                     let mutex = Arc::clone(&mutex);
+                    let counter = Arc::clone(&counter);
                     async move {
                         for i in 1..3 {
                             let guard = mutex.lock().await;
                             println!("[{id}] going to sleep ({i})...");
                             cv.wait(guard).await;
                             println!("[{id}] waking up ({i})...");
+                            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                         println!("[{id}] All done!");
                     }
@@ -170,6 +173,8 @@ mod tests {
             ex.run(async {
                 let all_tasks: Vec<_> = workers.into_iter().chain([wake_ups]).collect();
                 future::join_all(all_tasks).await;
+                let count = counter.load(std::sync::atomic::Ordering::Relaxed);
+                assert_eq!(count, 4*2);
             })
             .await;
         })

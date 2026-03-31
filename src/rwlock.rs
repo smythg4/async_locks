@@ -44,7 +44,6 @@ impl<T> RwLock<T> {
         WriteLockFuture {
             rwlock: self,
             slot: None,
-            set_odd: false,
         }
     }
 }
@@ -52,20 +51,13 @@ impl<T> RwLock<T> {
 pub struct WriteLockFuture<'a, T> {
     rwlock: &'a RwLock<T>,
     slot: Option<Arc<SyncMutex<Option<Waker>>>>,
-    set_odd: bool,
 }
 
 impl<'a, T> Drop for WriteLockFuture<'a, T> {
     fn drop(&mut self) {
         // this process is needed to eliminate stale wakers in the writer wakers queue
-        let needs_cleanup = if let Some(slot) = self.slot.take() {
+        if let Some(slot) = self.slot.take() {
             *slot.lock().unwrap() = None;
-            true
-        } else {
-            self.set_odd
-        };
-
-        if needs_cleanup {
             let w_guard = self.rwlock.writer_wakers.lock().unwrap();
             let all_writers_dead = w_guard.iter().all(|s| s.lock().unwrap().is_none());
             if all_writers_dead {
@@ -89,7 +81,7 @@ impl<'a, T> Drop for WriteLockFuture<'a, T> {
                     };
                 }
                 drop(w_guard);
-                // wake the readers
+                // wake the readers - there are no writers waiting
                 let mut r_guard = self.rwlock.reader_wakers.lock().unwrap();
                 let mut wakers = Vec::new();
                 while let Some(g) = r_guard.pop_front() {
@@ -150,7 +142,6 @@ impl<'a, T> Future for WriteLockFuture<'a, T> {
                     .compare_exchange_weak(s, u32::MAX, Acquire, Relaxed)
                 {
                     Ok(_) => {
-                        self.set_odd = false;
                         return Poll::Ready(WriteGuard {
                             rwlock: self.rwlock,
                         });
@@ -161,7 +152,6 @@ impl<'a, T> Future for WriteLockFuture<'a, T> {
                     }
                 }
             }
-            self.set_odd = true;
 
             // block new readers, by making sure the state is odd
             if s.is_multiple_of(2)
