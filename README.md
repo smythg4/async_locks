@@ -9,8 +9,10 @@ Test suite uses `smol` runtime. `crossbeam-queue::SegQueue` is used as a lock-fr
 - *Condvar -* took me a while to figure out how to hold on to the `Mutex` between `.await` points. Had to work through some issues with stale wakers potentially getting
 saved in the queue. Funky `slot` solution and elaborate `.drop` logic solves it.
 
-### Test Output
+### To-Do
+Need to research options for tracking `Wakers` that's better than what I'm doing now. Perhaps an `Arc<Mutex<HashSet<usize, Waker>>`? We can maintain a global `waker_counter` for id assignment.
 
+### Test Output
 #### Mutex
 Spin up a few threads with copies of the executor on them. Spawn 5 tasks each assigned to increment a counter 5 times.
 ```
