@@ -237,7 +237,7 @@ impl<T> Drop for WriteGuard<'_, T> {
     fn drop(&mut self) {
         let mut w_guard = self.rwlock.writer_wakers.lock().unwrap();
         let mut r_guard = self.rwlock.reader_wakers.lock().unwrap();
-        
+
         if let Some(w) = w_guard.pop_front() {
             self.rwlock.state.store(1, Release);
             // wake one writer
@@ -301,7 +301,10 @@ mod tests {
                 .collect();
 
             ex.run(async {
-                let all_tasks: Vec<_> = vec![write_tasks, read_tasks].into_iter().flatten().collect();
+                let all_tasks: Vec<_> = vec![write_tasks, read_tasks]
+                    .into_iter()
+                    .flatten()
+                    .collect();
                 future::join_all(all_tasks).await;
 
                 let final_val = *lock.read().await;
