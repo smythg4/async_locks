@@ -3,9 +3,9 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::ops::{Deref, DerefMut, Drop};
 use std::pin::Pin;
-use std::sync::Mutex as SyncMutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::{Arc, Mutex as SyncMutex};
 use std::task::Waker;
 use std::task::{Context, Poll};
 
@@ -17,7 +17,7 @@ pub struct Mutex<T> {
     // Needed a SyncMutex becauase I had a race condition
     // in drop() where the waiters list was still empty so nobody got
     // woken up
-    waiters: SyncMutex<VecDeque<Waker>>,
+    waiters: SyncMutex<VecDeque<Arc<SyncMutex<Option<Waker>>>>>,
 }
 
 impl<T> Mutex<T> {
@@ -30,7 +30,10 @@ impl<T> Mutex<T> {
     }
 
     pub fn lock(&self) -> LockFuture<'_, T> {
-        LockFuture { mutex: self }
+        LockFuture {
+            mutex: self,
+            slot: None,
+        }
     }
 }
 
@@ -59,19 +62,32 @@ impl<T> Drop for MutexGuard<'_, T> {
         // hold the lock while releasing state AND waking
         let mut waiters = self.mutex.waiters.lock().unwrap();
         self.mutex.state.store(false, Release);
-        if let Some(w) = waiters.pop_front() {
-            w.wake();
+        while let Some(g) = waiters.pop_front() {
+            if let Some(w) = g.lock().unwrap().take() {
+                w.wake();
+                break;
+            }
         }
     }
 }
 
 pub struct LockFuture<'a, T> {
     mutex: &'a Mutex<T>,
+    slot: Option<Arc<SyncMutex<Option<Waker>>>>,
+}
+
+impl<'a, T> Drop for LockFuture<'a, T> {
+    fn drop(&mut self) {
+        // this process is needed to eliminate stale wakers in the waiters queue
+        if let Some(slot) = self.slot.take() {
+            *slot.lock().unwrap() = None;
+        }
+    }
 }
 
 impl<'a, T> Future for LockFuture<'a, T> {
     type Output = MutexGuard<'a, T>;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // try to atomically acquire the lock
         // false = unlocked, attempt to swap to true = locked
         if self
@@ -85,8 +101,11 @@ impl<'a, T> Future for LockFuture<'a, T> {
         }
 
         // contended - register waker
+        let slot = Arc::new(SyncMutex::new(Some(cx.waker().clone())));
+
         let mut waiters = self.mutex.waiters.lock().unwrap();
-        waiters.push_back(cx.waker().clone());
+        waiters.push_back(Arc::clone(&slot));
+        self.slot = Some(slot);
 
         // double check before returning pending
         if self
@@ -96,6 +115,7 @@ impl<'a, T> Future for LockFuture<'a, T> {
             .is_ok()
         {
             let _ = waiters.pop_back();
+            let _ = self.slot.take();
             return Poll::Ready(MutexGuard { mutex: self.mutex });
         }
         // Ok - we lost, park this task

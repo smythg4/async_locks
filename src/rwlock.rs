@@ -250,6 +250,7 @@ impl<'a, T> Future for ReadLockFuture<'a, T> {
             s = self.rwlock.state.load(Relaxed);
             if s.is_multiple_of(2) {
                 let _ = r_wakers.pop_back();
+                let _ = self.slot.take();
                 drop(r_wakers);
                 continue; // retry acquisition
             }
