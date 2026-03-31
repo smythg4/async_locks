@@ -236,14 +236,15 @@ impl<T> DerefMut for WriteGuard<'_, T> {
 impl<T> Drop for WriteGuard<'_, T> {
     fn drop(&mut self) {
         let mut w_guard = self.rwlock.writer_wakers.lock().unwrap();
-        let mut r_guard = self.rwlock.reader_wakers.lock().unwrap();
-
         if let Some(w) = w_guard.pop_front() {
             self.rwlock.state.store(1, Release);
             // wake one writer
             w.wake();
             return;
         }
+        drop(w_guard);
+
+        let mut r_guard = self.rwlock.reader_wakers.lock().unwrap();
         self.rwlock.state.store(0, Release);
         while let Some(w) = r_guard.pop_front() {
             // wake ALL readers

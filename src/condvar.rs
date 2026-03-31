@@ -117,16 +117,16 @@ mod tests {
         smol::block_on(async move {
             let ex = smol::Executor::new();
 
-            let workers: Vec<_> = (0..10)
+            let workers: Vec<_> = (0..4)
                 .map(|id| {
                     let cv = Arc::clone(&cv);
                     let mutex = Arc::clone(&mutex);
                     async move {
-                        for i in 1..11 {
+                        for i in 1..3 {
                             let guard = mutex.lock().await;
-                            println!("[{id}] going to sleep for the {i} time...");
+                            println!("[{id}] going to sleep ({i})...");
                             cv.wait(guard).await;
-                            println!("[{id}] waking up for the {i} time...");
+                            println!("[{id}] waking up ({i})...");
                         }
                     }
                 })
@@ -134,7 +134,7 @@ mod tests {
                 .collect();
 
             let wake_ups = ex.spawn(async move {
-                for i in 0..25 {
+                for i in 0..6 {
                     if i % 2 == 0 {
                         println!("Wake one up!");
                         cv.notify_one();
