@@ -1,40 +1,38 @@
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex as SyncMutex;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Relaxed;
-use std::task::{Poll, Waker};
+use std::task::Poll;
+use std::ptr::NonNull;
 
 use crate::mutex::{LockFuture, Mutex, MutexGuard};
+use crate::waiter::Waiter;
+use cordyceps::List;
 
 pub struct Condvar {
-    wakers: SyncMutex<HashMap<usize, Waker>>,
-    next_waiter_id: AtomicUsize,
+    waiters: SyncMutex<List<Waiter>>,
 }
 
 impl Condvar {
     pub fn new() -> Self {
         Self {
-            wakers: SyncMutex::new(HashMap::new()),
-            next_waiter_id: AtomicUsize::new(0),
+            waiters: SyncMutex::new(List::new()),
         }
     }
 
     pub fn notify_one(&self) {
-        let mut guard = self.wakers.lock().unwrap();
-        if let Some(id) = guard.keys().next().copied() {
-            let w = guard.remove(&id).unwrap();
+        let mut guard = self.waiters.lock().unwrap();
+        if let Some(ptr) = guard.pop_front() {
+            let w = unsafe { (*ptr.as_ptr()).waker.take().unwrap() };
             drop(guard);
             w.wake();
         }
     }
 
     pub fn notify_all(&self) {
-        let mut guard = self.wakers.lock().unwrap();
+        let mut guard = self.waiters.lock().unwrap();
         let mut wakers = Vec::new();
-        while let Some(id) = guard.keys().next().copied() {
-            let w = guard.remove(&id).unwrap();
+        while let Some(ptr) = guard.pop_front() {
+            let w = unsafe { (*ptr.as_ptr()).waker.take().unwrap() };
             wakers.push(w);
         }
         drop(guard);
@@ -45,12 +43,8 @@ impl Condvar {
         CondvarWaitFuture {
             cv: self,
             phase: CondvarPhase::Waiting(guard),
-            slot_id: self.next_slot_id(),
+            waiter: Waiter::default(),
         }
-    }
-
-    fn next_slot_id(&self) -> usize {
-        self.next_waiter_id.fetch_add(1, Relaxed)
     }
 }
 
@@ -70,13 +64,16 @@ enum CondvarPhase<'b, T> {
 pub struct CondvarWaitFuture<'a, 'b, T> {
     cv: &'a Condvar,
     phase: CondvarPhase<'b, T>,
-    slot_id: usize,
+    waiter: Waiter,
 }
 
 impl<'a, 'b, T> Drop for CondvarWaitFuture<'a, 'b, T> {
     fn drop(&mut self) {
         // this process is needed to eliminate stale wakers in the Condvar waker queue
-        let _ = self.cv.wakers.lock().unwrap().remove(&self.slot_id);
+        let mut guard = self.cv.waiters.lock().unwrap();
+        if self.waiter.waker.is_some() {
+            let _ = unsafe { guard.remove(NonNull::from_ref(&self.waiter)) };
+        }
     }
 }
 
@@ -87,28 +84,38 @@ impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
         match std::mem::replace(&mut this.phase, CondvarPhase::Sentinel) {
             CondvarPhase::Waiting(guard) => {
                 let mutex_ref = guard.mutex;
-                this.cv
-                    .wakers
+                let mut waiter_guard = this.cv
+                    .waiters
                     .lock()
-                    .unwrap()
-                    .insert(this.slot_id, cx.waker().clone());
+                    .unwrap();
+                this.waiter.add_waker(cx.waker().clone());
+                waiter_guard.push_back(NonNull::from_ref(&this.waiter));
+
                 drop(guard);
+                drop(waiter_guard);
                 this.phase = CondvarPhase::Parked(mutex_ref);
                 Poll::Pending
             }
             CondvarPhase::Parked(mutex) => {
-                if let Some(w) = this.cv.wakers.lock().unwrap().get_mut(&this.slot_id) {
-                    *w = cx.waker().clone();
+                let waiter_guard = this.cv.waiters.lock().unwrap();
+                if this.waiter.waker.is_some() {
+                    // we have a waker, lets just update it
+                    this.waiter.add_waker(cx.waker().clone());
                     this.phase = CondvarPhase::Parked(mutex);
-                    return Poll::Pending;
+                    Poll::Pending
+                } else {
+                    // we were notified and waker was taken
+                    drop(waiter_guard);
+                    let mut lock_future = mutex.lock();
+                    let result = unsafe { Pin::new_unchecked(&mut lock_future) } .poll(cx);
+                    match result {
+                        Poll::Pending => {
+                            this.phase = CondvarPhase::Acquiring(lock_future);
+                            Poll::Pending
+                        },
+                        _ => result,
+                    }
                 }
-
-                let mut lock_future = mutex.lock();
-                let result = unsafe { Pin::new_unchecked(&mut lock_future) }.poll(cx);
-                if result.is_pending() {
-                    this.phase = CondvarPhase::Acquiring(lock_future);
-                }
-                result
             }
             CondvarPhase::Acquiring(mut lock_future) => {
                 let result = unsafe { Pin::new_unchecked(&mut lock_future) }.poll(cx);

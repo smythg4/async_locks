@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::task::{Context, Poll};
 
-use core::ptr::NonNull;
+use std::ptr::NonNull;
 
 use crate::waiter::Waiter;
 
@@ -66,8 +66,8 @@ impl<T> Drop for MutexGuard<'_, T> {
         let mut waiter_guard = self.mutex.waiters.lock().unwrap();
         self.mutex.state.store(false, Release);
         if let Some(ptr) = waiter_guard.pop_front() {
-            let waker = unsafe { (*ptr.as_ptr()).waker.take() };
-            waker.unwrap().wake();
+            let waker = unsafe { (*ptr.as_ptr()).waker.take().unwrap() };
+            waker.wake();
         }
     }
 }
@@ -121,6 +121,7 @@ impl<'a, T> Future for LockFuture<'a, T> {
         {
             // Safety: We know this waiter is in the list
             unsafe { waiters.remove(NonNull::from_ref(&this.waiter)) };
+            let _ = this.waiter.waker.take(); // not really required since we're about to drop anyhow
             return Poll::Ready(MutexGuard { mutex: this.mutex });
         }
         // Ok - we lost, park this task

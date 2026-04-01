@@ -12,16 +12,9 @@ pub(crate) struct Waiter {
 }
 
 impl Waiter {
-    pub fn new(val: Waker) -> Self {
-        Self {
-            waker: Some(val),
-            ..Self::default()
-        }
-    }
-
     pub fn add_waker(&mut self, val: Waker) {
         self.waker = Some(val);
-    } 
+    }
 }
 
 unsafe impl Linked<Links<Waiter>> for Waiter {
