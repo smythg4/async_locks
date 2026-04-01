@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 use std::task::{Poll, Waker};
 
-use crate::mutex::{Mutex, MutexGuard, LockFuture};
+use crate::mutex::{LockFuture, Mutex, MutexGuard};
 
 pub struct Condvar {
     wakers: SyncMutex<HashMap<usize, Waker>>,
@@ -60,12 +60,12 @@ impl Default for Condvar {
     }
 }
 
-  enum CondvarPhase<'b, T> {
-      Waiting(MutexGuard<'b, T>),   // pre-first-poll, holding the guard
-      Parked(&'b Mutex<T>),         // registered with condvar, waiting for notify
-      Acquiring(LockFuture<'b, T>), // notified, re-acquiring the mutex
-      Sentinel,
-  }
+enum CondvarPhase<'b, T> {
+    Waiting(MutexGuard<'b, T>),   // pre-first-poll, holding the guard
+    Parked(&'b Mutex<T>),         // registered with condvar, waiting for notify
+    Acquiring(LockFuture<'b, T>), // notified, re-acquiring the mutex
+    Sentinel,
+}
 
 pub struct CondvarWaitFuture<'a, 'b, T> {
     cv: &'a Condvar,
@@ -82,19 +82,20 @@ impl<'a, 'b, T> Drop for CondvarWaitFuture<'a, 'b, T> {
 
 impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
     type Output = MutexGuard<'b, T>;
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Self::Output> {
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         match std::mem::replace(&mut this.phase, CondvarPhase::Sentinel) {
             CondvarPhase::Waiting(guard) => {
                 let mutex_ref = guard.mutex;
-                this.cv.wakers.lock().unwrap().insert(this.slot_id, cx.waker().clone());
+                this.cv
+                    .wakers
+                    .lock()
+                    .unwrap()
+                    .insert(this.slot_id, cx.waker().clone());
                 drop(guard);
                 this.phase = CondvarPhase::Parked(mutex_ref);
                 Poll::Pending
-            },
+            }
             CondvarPhase::Parked(mutex) => {
                 if let Some(w) = this.cv.wakers.lock().unwrap().get_mut(&this.slot_id) {
                     *w = cx.waker().clone();
@@ -108,14 +109,14 @@ impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
                     this.phase = CondvarPhase::Acquiring(lock_future);
                 }
                 result
-            },
+            }
             CondvarPhase::Acquiring(mut lock_future) => {
                 let result = Pin::new(&mut lock_future).poll(cx);
                 if result.is_pending() {
                     this.phase = CondvarPhase::Acquiring(lock_future);
                 }
                 result
-            },
+            }
             CondvarPhase::Sentinel => unreachable!(),
         }
     }

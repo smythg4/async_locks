@@ -272,10 +272,10 @@ impl<T> Drop for WriteGuard<'_, T> {
             w.wake();
             return;
         }
+        self.rwlock.state.store(0, Release);
         drop(w_guard);
 
         let mut r_guard = self.rwlock.reader_wakers.lock().unwrap();
-        self.rwlock.state.store(0, Release);
         let mut wakers = Vec::new();
         while let Some(id) = r_guard.keys().next().copied() {
             let w = r_guard.remove(&id).unwrap();

@@ -2,8 +2,6 @@
 ### About
 A learning project for async concurrency primitives in Rust. Recently changed waker management systems to a `std::sync::Mutex<HashMap<usize, Waker>>` instead of the queue I was using before. This creates issues of fairness as it's no longer FIFO ordering when pulling something off the queue, it's all in the hands of the hashing gods. Production libraries use intrusive linked lists in the parent referring to wakers embedded in the Future. Considering importing `cordyceps` to apply such an approach in the future, but it's going to require the old `PhantomPinned`.
 
-Still getting occasional deadlocks on `RwLock` that I'll have to figure out.
-
 ### Dependencies
 Test suite uses `smol` runtime and `futures` crate for `join_all`.
 
