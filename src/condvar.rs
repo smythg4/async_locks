@@ -52,7 +52,7 @@ impl Condvar {
 enum CondvarPhase<'b, T> {
     Waiting(MutexGuard<'b, T>),   // pre-first-poll, holding the guard
     Parked(&'b Mutex<T>),         // registered with condvar, waiting for notify
-    Acquiring(LockFuture<'b, T>), // notified, re-acquiring the mutex
+    Acquiring(Pin<Box<LockFuture<'b, T>>>), // notified, re-acquiring the mutex
     Sentinel,
 }
 
@@ -99,8 +99,8 @@ impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
                 } else {
                     // we were notified and waker was taken
                     drop(waiter_guard);
-                    let mut lock_future = mutex.lock();
-                    let result = unsafe { Pin::new_unchecked(&mut lock_future) }.poll(cx);
+                    let mut lock_future = Box::pin(mutex.lock());
+                    let result = lock_future.as_mut().poll(cx);
                     match result {
                         Poll::Pending => {
                             this.phase = CondvarPhase::Acquiring(lock_future);
@@ -111,7 +111,7 @@ impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
                 }
             }
             CondvarPhase::Acquiring(mut lock_future) => {
-                let result = unsafe { Pin::new_unchecked(&mut lock_future) }.poll(cx);
+                let result = lock_future.as_mut().poll(cx);
                 if result.is_pending() {
                     this.phase = CondvarPhase::Acquiring(lock_future);
                 }
