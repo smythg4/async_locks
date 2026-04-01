@@ -6,3 +6,6 @@ edition = "2024"
 [dev-dependencies]
 futures = "0.3.32"
 smol = "2.0.2"
+
+[dependencies]
+cordyceps = "0.3.4"

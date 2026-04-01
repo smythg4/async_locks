@@ -7,7 +7,7 @@ Test suite uses `smol` runtime and `futures` crate for `join_all`.
 
 ### Building concurrency primitives from scratch for asynchronous Rust.
 
-- **Mutex -** learned the race conditions that come up with `Waker` management. That's why I wrapped the waker queue in a `std::sync::Mutex`. It makes sense why `tokio` recommends using `std::sync::Mutex` when you don't cross `.await` points. The async Mutex comes with this internal performance hit.
+- **Mutex -** learned the race conditions that come up with `Waker` management. That's why I wrapped the waker queue in a `std::sync::Mutex`. It makes sense why `tokio` recommends using `std::sync::Mutex` when you don't cross `.await` points. The async Mutex comes with this internal performance hit. *Update*: Included intrusive linked list for waker management. Going to add this to the other implementations too.
 - **RwLock -** tricky double-check logic required that was glossed over in the sync implementation that simply looped. Learned lots about proper memory ordering.
 - **Condvar -** took me a while to figure out how to hold on to the `Mutex` between `.await` points. Had to work through some issues with stale wakers potentially getting saved in the queue. Lots of challenging 'move' issues in the `.poll()` method on this one.
 

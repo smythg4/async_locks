@@ -83,7 +83,7 @@ impl<'a, 'b, T> Drop for CondvarWaitFuture<'a, 'b, T> {
 impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
     type Output = MutexGuard<'b, T>;
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
+        let this = unsafe { self.get_unchecked_mut() };
         match std::mem::replace(&mut this.phase, CondvarPhase::Sentinel) {
             CondvarPhase::Waiting(guard) => {
                 let mutex_ref = guard.mutex;
@@ -104,14 +104,14 @@ impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
                 }
 
                 let mut lock_future = mutex.lock();
-                let result = Pin::new(&mut lock_future).poll(cx);
+                let result = unsafe { Pin::new_unchecked(&mut lock_future) }.poll(cx);
                 if result.is_pending() {
                     this.phase = CondvarPhase::Acquiring(lock_future);
                 }
                 result
             }
             CondvarPhase::Acquiring(mut lock_future) => {
-                let result = Pin::new(&mut lock_future).poll(cx);
+                let result = unsafe { Pin::new_unchecked(&mut lock_future) }.poll(cx);
                 if result.is_pending() {
                     this.phase = CondvarPhase::Acquiring(lock_future);
                 }
