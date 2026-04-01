@@ -1,16 +1,18 @@
 # async_locks
 ### About
-Test suite uses `smol` runtime. `crossbeam-queue::SegQueue` is used as a lock-free queue in Condvar wakers.
+A learning project for async concurrency primitives in Rust. Recently changed waker management systems to a `std::sync::Mutex<HashMap<usize, Waker>>` instead of the queue I was using before. This creates issues of fairness as it's no longer FIFO ordering when pulling something off the queue, it's all in the hands of the hashing gods. Production libraries use intrusive linked lists in the parent referring to wakers embedded in the Future. Considering importing `cordyceps` to apply such an approach in the future, but it's going to require the old `PhantomPinned`.
+
+Still getting occasional deadlocks on `RwLock` that I'll have to figure out.
+
+### Dependencies
+Test suite uses `smol` runtime and `futures` crate for `join_all`.
 
 ### Building concurrency primitives from scratch for asynchronous Rust.
 
 - **Mutex -** learned the race conditions that come up with `Waker` management. That's why I wrapped the waker queue in a `std::sync::Mutex`. It makes sense why `tokio` recommends using `std::sync::Mutex` when you don't cross `.await` points. The async Mutex comes with this internal performance hit.
-- **RwLock -** tricky double-check logic required that was glossed over in the sync implementation that simply looped. Learned lots about proper memory ordering. Experienced the same stale waker issue that was present in the `Condvar` implementation and had to use the same silly `slot` and `.drop` pattern. This is probably why production libraries use a `WaitersList` data structure to handle it all internally.
-- **Condvar -** took me a while to figure out how to hold on to the `Mutex` between `.await` points. Had to work through some issues with stale wakers potentially getting
-saved in the queue. Funky `slot` solution and elaborate `.drop` logic solves it.
+- **RwLock -** tricky double-check logic required that was glossed over in the sync implementation that simply looped. Learned lots about proper memory ordering.
+- **Condvar -** took me a while to figure out how to hold on to the `Mutex` between `.await` points. Had to work through some issues with stale wakers potentially getting saved in the queue. Lots of challenging 'move' issues in the `.poll()` method on this one.
 
-### To-Do
-Need to research options for tracking `Wakers` that's better than what I'm doing now. Perhaps an `Arc<Mutex<HashSet<usize, Waker>>`? We can maintain a `waker_counter` in the `Mutex`, `RwLock`, and `Condvar` for id assignment.
 
 ### Test Output
 #### Mutex

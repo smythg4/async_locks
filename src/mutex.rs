@@ -1,11 +1,11 @@
 use std::cell::UnsafeCell;
-use std::collections::VecDeque;
+use std::collections::HashMap;
 use std::future::Future;
 use std::ops::{Deref, DerefMut, Drop};
 use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
+use std::sync::Mutex as SyncMutex;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use std::sync::{Arc, Mutex as SyncMutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::task::Waker;
 use std::task::{Context, Poll};
 
@@ -17,23 +17,29 @@ pub struct Mutex<T> {
     // Needed a SyncMutex becauase I had a race condition
     // in drop() where the waiters list was still empty so nobody got
     // woken up
-    waiters: SyncMutex<VecDeque<Arc<SyncMutex<Option<Waker>>>>>,
+    waiters: SyncMutex<HashMap<usize, Waker>>,
+    next_waiter_id: AtomicUsize,
 }
 
 impl<T> Mutex<T> {
-    pub const fn new(value: T) -> Self {
+    pub fn new(value: T) -> Self {
         Self {
             state: AtomicBool::new(false), // starts unlocked
             value: UnsafeCell::new(value),
-            waiters: SyncMutex::new(VecDeque::new()),
+            waiters: SyncMutex::new(HashMap::new()),
+            next_waiter_id: AtomicUsize::new(0),
         }
     }
 
     pub fn lock(&self) -> LockFuture<'_, T> {
         LockFuture {
             mutex: self,
-            slot: None,
+            slot_id: self.next_slot_id(),
         }
+    }
+
+    fn next_slot_id(&self) -> usize {
+        self.next_waiter_id.fetch_add(1, Relaxed)
     }
 }
 
@@ -62,32 +68,27 @@ impl<T> Drop for MutexGuard<'_, T> {
         // hold the lock while releasing state AND waking
         let mut waiters = self.mutex.waiters.lock().unwrap();
         self.mutex.state.store(false, Release);
-        while let Some(g) = waiters.pop_front() {
-            if let Some(w) = g.lock().unwrap().take() {
-                w.wake();
-                break;
-            }
+        if let Some(id) = waiters.keys().next().copied() {
+            waiters.remove(&id).unwrap().wake();
         }
     }
 }
 
 pub struct LockFuture<'a, T> {
     mutex: &'a Mutex<T>,
-    slot: Option<Arc<SyncMutex<Option<Waker>>>>,
+    slot_id: usize,
 }
 
 impl<'a, T> Drop for LockFuture<'a, T> {
     fn drop(&mut self) {
-        // this process is needed to eliminate stale wakers in the waiters queue
-        if let Some(slot) = self.slot.take() {
-            *slot.lock().unwrap() = None;
-        }
+        // remove the waker associated with this Future if it drops prior to completion
+        let _ = self.mutex.waiters.lock().unwrap().remove(&self.slot_id);
     }
 }
 
 impl<'a, T> Future for LockFuture<'a, T> {
     type Output = MutexGuard<'a, T>;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // try to atomically acquire the lock
         // false = unlocked, attempt to swap to true = locked
         if self
@@ -101,11 +102,12 @@ impl<'a, T> Future for LockFuture<'a, T> {
         }
 
         // contended - register waker
-        let slot = Arc::new(SyncMutex::new(Some(cx.waker().clone())));
-
         let mut waiters = self.mutex.waiters.lock().unwrap();
-        waiters.push_back(Arc::clone(&slot));
-        self.slot = Some(slot);
+        if let Some(w) = waiters.get_mut(&self.slot_id) {
+            w.clone_from(cx.waker()); // update stale waker, re-park
+        } else {
+            waiters.insert(self.slot_id, cx.waker().clone());
+        }
 
         // double check before returning pending
         if self
@@ -114,8 +116,7 @@ impl<'a, T> Future for LockFuture<'a, T> {
             .compare_exchange(false, true, Acquire, Relaxed)
             .is_ok()
         {
-            let _ = waiters.pop_back();
-            let _ = self.slot.take();
+            let _ = waiters.remove(&self.slot_id);
             return Poll::Ready(MutexGuard { mutex: self.mutex });
         }
         // Ok - we lost, park this task
