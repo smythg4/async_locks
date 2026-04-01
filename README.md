@@ -12,6 +12,7 @@ Test suite uses `smol` runtime and `futures` crate for `join_all`.
 - **Mutex -** learned the race conditions that come up with `Waker` management. That's why I wrapped the waker queue in a `std::sync::Mutex`. It makes sense why `tokio` recommends using `std::sync::Mutex` when you don't cross `.await` points. The async Mutex comes with this internal performance hit.
 - **RwLock -** tricky double-check logic required that was glossed over in the sync implementation that simply looped. Learned lots about proper memory ordering.
 - **Condvar -** took me a while to figure out how to hold on to the `Mutex` between `.await` points. Had to work through some issues with stale wakers potentially getting saved in the queue. Lots of challenging 'move' issues in the `.poll()` method on this one.
+- **Semaphore -** built using the Condvar and Mutex created above.
 
 
 ### Test Output
@@ -113,4 +114,37 @@ Waking everyone up!
 [2] woken up!
 [3] woken up!
 test condvar::tests::condvar_notify_all ... ok
+```
+#### Semphore
+Spawn 12 tasks competing for a semaphore with 3 permits. Each task acquires a permit,
+records the current concurrency, yields (holding the permit), then releases.
+Asserts that concurrency never exceeds 3 and that all 12 tasks complete.
+```
+running 1 test
+[0] acquired permit, concurrency now: 1
+[7] acquired permit, concurrency now: 1
+[10] acquired permit, concurrency now: 2
+[7] released permit, tasks completed: 1
+[0] released permit, tasks completed: 2
+[2] acquired permit, concurrency now: 2
+[8] acquired permit, concurrency now: 3
+[10] released permit, tasks completed: 3
+[5] acquired permit, concurrency now: 3
+[9] acquired permit, concurrency now: 3
+[5] released permit, tasks completed: 5
+[8] released permit, tasks completed: 6
+[4] acquired permit, concurrency now: 3
+[9] released permit, tasks completed: 7
+[4] released permit, tasks completed: 8
+[2] released permit, tasks completed: 4
+[1] acquired permit, concurrency now: 2
+[1] released permit, tasks completed: 9
+[11] acquired permit, concurrency now: 2
+[11] released permit, tasks completed: 10
+[6] acquired permit, concurrency now: 2
+[6] released permit, tasks completed: 11
+[3] acquired permit, concurrency now: 1
+[3] released permit, tasks completed: 12
+peak concurrency: 3/3
+test semaphore::tests::test_semaphore ... ok
 ```

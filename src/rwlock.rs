@@ -58,6 +58,7 @@ pub struct WriteLockFuture<'a, T> {
 impl<'a, T> Drop for WriteLockFuture<'a, T> {
     fn drop(&mut self) {
         // this process is needed to eliminate stale wakers in the writer wakers queue
+         // essential for cancel safety
         let mut w_guard = self.rwlock.writer_waiters.lock().unwrap();
         if self.waiter.waker.is_some() {
             unsafe { w_guard.remove(NonNull::from_ref(&self.waiter)) };
@@ -166,6 +167,7 @@ pub struct ReadLockFuture<'a, T> {
 impl<'a, T> Drop for ReadLockFuture<'a, T> {
     fn drop(&mut self) {
         // remove the waker associated with this Future if it drops prior to completion
+         // essential for cancel safety
         let mut r_guard = self.rwlock.reader_waiters.lock().unwrap();
         if self.waiter.waker.is_some() {
             unsafe { r_guard.remove(NonNull::from_ref(&self.waiter)) };

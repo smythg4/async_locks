@@ -12,6 +12,7 @@ use std::ptr::NonNull;
 
 use crate::waiter::Waiter;
 
+#[derive(Default)]
 pub struct Mutex<T> {
     /// false: Unlocked
     /// true: Locked
@@ -67,6 +68,7 @@ impl<T> Drop for MutexGuard<'_, T> {
         self.mutex.state.store(false, Release);
         if let Some(ptr) = waiter_guard.pop_front() {
             let waker = unsafe { (*ptr.as_ptr()).waker.take().unwrap() };
+            drop(waiter_guard); // make sure the guard is dropped before calling .wake()
             waker.wake();
         }
     }
@@ -80,6 +82,7 @@ pub struct LockFuture<'a, T> {
 impl<'a, T> Drop for LockFuture<'a, T> {
     fn drop(&mut self) {
         // remove the waker associated with this Future if it drops prior to completion
+        // essential for cancel safety
         let mut waiter_guard = self.mutex.waiters.lock().unwrap();
         if self.waiter.waker.is_some() {
             let _ = unsafe { waiter_guard.remove(NonNull::from_ref(&self.waiter)) };

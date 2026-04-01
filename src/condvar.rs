@@ -1,13 +1,14 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::ptr::NonNull;
 use std::sync::Mutex as SyncMutex;
 use std::task::Poll;
-use std::ptr::NonNull;
 
 use crate::mutex::{LockFuture, Mutex, MutexGuard};
 use crate::waiter::Waiter;
 use cordyceps::List;
 
+#[derive(Default)]
 pub struct Condvar {
     waiters: SyncMutex<List<Waiter>>,
 }
@@ -48,12 +49,6 @@ impl Condvar {
     }
 }
 
-impl Default for Condvar {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 enum CondvarPhase<'b, T> {
     Waiting(MutexGuard<'b, T>),   // pre-first-poll, holding the guard
     Parked(&'b Mutex<T>),         // registered with condvar, waiting for notify
@@ -70,6 +65,7 @@ pub struct CondvarWaitFuture<'a, 'b, T> {
 impl<'a, 'b, T> Drop for CondvarWaitFuture<'a, 'b, T> {
     fn drop(&mut self) {
         // this process is needed to eliminate stale wakers in the Condvar waker queue
+         // essential for cancel safety
         let mut guard = self.cv.waiters.lock().unwrap();
         if self.waiter.waker.is_some() {
             let _ = unsafe { guard.remove(NonNull::from_ref(&self.waiter)) };
@@ -84,10 +80,7 @@ impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
         match std::mem::replace(&mut this.phase, CondvarPhase::Sentinel) {
             CondvarPhase::Waiting(guard) => {
                 let mutex_ref = guard.mutex;
-                let mut waiter_guard = this.cv
-                    .waiters
-                    .lock()
-                    .unwrap();
+                let mut waiter_guard = this.cv.waiters.lock().unwrap();
                 this.waiter.add_waker(cx.waker().clone());
                 waiter_guard.push_back(NonNull::from_ref(&this.waiter));
 
@@ -107,12 +100,12 @@ impl<'a, 'b, T> Future for CondvarWaitFuture<'a, 'b, T> {
                     // we were notified and waker was taken
                     drop(waiter_guard);
                     let mut lock_future = mutex.lock();
-                    let result = unsafe { Pin::new_unchecked(&mut lock_future) } .poll(cx);
+                    let result = unsafe { Pin::new_unchecked(&mut lock_future) }.poll(cx);
                     match result {
                         Poll::Pending => {
                             this.phase = CondvarPhase::Acquiring(lock_future);
                             Poll::Pending
-                        },
+                        }
                         _ => result,
                     }
                 }
