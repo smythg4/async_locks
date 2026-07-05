@@ -52,7 +52,7 @@ impl Condvar {
 enum CondvarPhase<'b, T> {
     Waiting(MutexGuard<'b, T>),   // pre-first-poll, holding the guard
     Parked(&'b Mutex<T>),         // registered with condvar, waiting for notify
-    Acquiring(Pin<Box<LockFuture<'b, T>>>), // notified, re-acquiring the mutex
+    Acquiring(Pin<Box<LockFuture<'b, T>>>), // notified, re-acquiring the mutex. Need to pin the future to ensure Waiter doesn't move
     Sentinel,
 }
 
